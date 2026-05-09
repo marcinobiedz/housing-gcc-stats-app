@@ -12,14 +12,14 @@ const BASE_URLS: FetchConfig[] = [
   { url: "https://www.propertyfinder.bh/en/buy/apartments-for-sale.html", country: "Bahrain", city: "Bahrain" },
 ];
 
-const scheduler = createScheduler({
+createScheduler({
   urls: BASE_URLS,
   dataDir: "data",
-  baseGapMinutes: 20,
+  baseGapMinutes: 10,
   varianceMinutes: 5,
   timezone: "Europe/Warsaw",
-  cronExpression: "0 0 * * *",
+  cronExpression: "0 */4 * * *",
 });
 
-console.log(`Service started. Monitoring active - runs daily at midnight (UTC+1).`);
-console.log(`URLs will be fetched with 20 min gap (+- 5 min random).`);
+console.log(`Service started. Runs every 4 hours.`);
+console.log(`URLs will be fetched with 10 min gap (+- 5 min random).`);

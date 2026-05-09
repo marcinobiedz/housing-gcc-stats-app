@@ -2,7 +2,7 @@ import * as cheerio from "cheerio";
 import type { NextData } from "./types.js";
 
 export async function fetchHtml(url: string): Promise<string> {
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
   if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status}`);
   return response.text();
 }

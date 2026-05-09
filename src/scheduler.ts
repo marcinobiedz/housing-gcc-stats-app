@@ -1,40 +1,21 @@
 import cron from "node-cron";
+import type { CronConfig, IndexData, CityIndexData } from "./scheduler-types.js";
 import type { FetchConfig, HousingData } from "./types.js";
 import { fetchHtml, extractNextData, parseNextData } from "./fetcher.js";
-import * as fs from "fs";
-import * as path from "path";
-
-interface CronConfig {
-  urls: FetchConfig[];
-  dataDir: string;
-  baseGapMinutes: number;
-  varianceMinutes: number;
-  timezone: string;
-  cronExpression: string;
-}
+import {
+  ensureFolder,
+  readIndexFile,
+  saveIndexFile,
+  saveCityData,
+  logError,
+} from "./scheduler-storage.js";
 
 export function createScheduler(config: CronConfig) {
   const { urls, dataDir, baseGapMinutes, varianceMinutes, timezone, cronExpression } = config;
   let isTaskRunning = false;
 
-  function getDateFolder(): string {
+  function getTodayDateString(): string {
     return new Date().toISOString().split("T")[0];
-  }
-
-  function ensureFolder(): string {
-    const folderPath = path.join(dataDir, getDateFolder());
-    if (!fs.existsSync(folderPath)) {
-      fs.mkdirSync(folderPath, { recursive: true });
-    }
-    return folderPath;
-  }
-
-  function logError(message: string, stack?: string): void {
-    const folderPath = ensureFolder();
-    const timestamp = new Date().toISOString();
-    const logEntry = `[${timestamp}] ERROR: ${message}${stack ? `\n${stack}` : ""}\n\n`;
-    fs.appendFileSync(path.join(folderPath, "error.log"), logEntry);
-    console.log(`Error saved to ${folderPath}/error.log`);
   }
 
   function randomDelay(): number {
@@ -50,7 +31,7 @@ export function createScheduler(config: CronConfig) {
     if (!nextData) {
       const errMsg = `__NEXT_DATA__ not found for ${fetchConfig.city}`;
       console.error(errMsg);
-      logError(errMsg);
+      logError(dataDir, errMsg);
       return null;
     }
 
@@ -69,6 +50,12 @@ export function createScheduler(config: CronConfig) {
     };
   }
 
+  function isFetchedToday(fetchedAt: string | undefined): boolean {
+    if (!fetchedAt) return false;
+    const today = getTodayDateString();
+    return fetchedAt.startsWith(today);
+  }
+
   async function performTask() {
     if (isTaskRunning) {
       console.log("Task already running. Skipping.");
@@ -76,16 +63,36 @@ export function createScheduler(config: CronConfig) {
     }
 
     isTaskRunning = true;
-    console.log(`\n[${new Date().toISOString()}] Task started.`);
+    const now = new Date().toISOString();
+    console.log(`\n[${now}] Task started.`);
 
     try {
+      const existingIndex = readIndexFile(dataDir);
+      const fetchedCities = new Set(
+        existingIndex?.cities
+          .filter((c) => isFetchedToday(c.fetchedAt))
+          .map((c) => c.city) || []
+      );
+
+      const urlsToFetch = urls.filter((u) => !fetchedCities.has(u.city));
+
+      if (urlsToFetch.length === 0) {
+        console.log("All cities already fetched today. Skipping.");
+        isTaskRunning = false;
+        console.log(`[${new Date().toISOString()}] Task finished.`);
+        return;
+      }
+
+      console.log(`Need to fetch: ${urlsToFetch.map((u) => u.city).join(", ")}`);
+      console.log(`Already fetched today: ${[...fetchedCities].join(", ") || "none"}`);
+
       const results: HousingData[] = [];
-      for (let i = 0; i < urls.length; i++) {
-        const fetchConfig = urls[i];
+      for (let i = 0; i < urlsToFetch.length; i++) {
+        const fetchConfig = urlsToFetch[i];
         const result = await processUrl(fetchConfig);
         if (result) results.push(result);
 
-        if (i < urls.length - 1) {
+        if (i < urlsToFetch.length - 1) {
           const waitMs = randomDelay();
           console.log(`Waiting ${Math.round(waitMs / 60000)} mins before next URL...`);
           await new Promise(resolve => setTimeout(resolve, Math.max(0, waitMs)));
@@ -93,36 +100,55 @@ export function createScheduler(config: CronConfig) {
       }
 
       if (results.length > 0) {
-        const folderPath = ensureFolder();
+        results.forEach((r) => saveCityData(dataDir, r));
 
-        results.forEach((r) => {
-          const fileName = `${r.city.toLowerCase().replace(/\s+/g, "-")}.json`;
-          fs.writeFileSync(path.join(folderPath, fileName), JSON.stringify(r, null, 2));
+        const newCities: CityIndexData[] = results.map((r) => ({
+          city: r.city,
+          country: r.country,
+          file: `${r.city.toLowerCase().replace(/\s+/g, "-")}.json`,
+          totalListings: r.totalListings,
+          fetchedAt: now,
+        }));
+
+        const existingCitiesMap = new Map(
+          existingIndex?.cities.map((c) => [c.city, c]) || []
+        );
+
+        const allCities: CityIndexData[] = urls.map((u) => {
+          const fromNew = newCities.find((nc) => nc.city === u.city);
+          if (fromNew) return fromNew;
+          return existingCitiesMap.get(u.city) || {
+            city: u.city,
+            country: u.country,
+            file: `${u.city.toLowerCase().replace(/\s+/g, "-")}.json`,
+            totalListings: 0,
+          };
         });
 
-        const indexData = {
-          scrapedAt: new Date().toISOString(),
-          cities: results.map((r) => ({
-            city: r.city,
-            country: r.country,
-            file: `${r.city.toLowerCase().replace(/\s+/g, "-")}.json`,
-            totalListings: r.totalListings,
-          })),
+        const indexData: IndexData = {
+          scrapedAt: now,
+          cities: allCities,
         };
-        fs.writeFileSync(path.join(folderPath, "index.json"), JSON.stringify(indexData, null, 2));
+        saveIndexFile(dataDir, indexData);
 
+        const folderPath = ensureFolder(dataDir);
         console.log(`\nSaved to ${folderPath}/`);
         console.log("\n=== SUMMARY ===");
         results.forEach((r) => console.log(`${r.city}: ${r.totalListings} listings, ${r.areas.length} areas`));
+
+        const skippedCount = urls.length - results.length;
+        if (skippedCount > 0) {
+          console.log(`\nSkipped (already fetched today): ${skippedCount} cities`);
+        }
       } else {
-        logError("All URLs failed - no data scraped");
+        logError(dataDir, "All URLs failed - no data scraped");
       }
 
-} catch (error) {
+    } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       const stack = error instanceof Error ? error.stack : undefined;
       console.error(`Fatal Error:`, message);
-      logError(message, stack);
+      logError(dataDir, message, stack);
     } finally {
       isTaskRunning = false;
       console.log(`[${new Date().toISOString()}] Task finished.`);
