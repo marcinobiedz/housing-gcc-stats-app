@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { createScheduler } from "./scheduler.js";
 import type { FetchConfig } from "./types.js";
 
