@@ -156,6 +156,4 @@ export function createScheduler(config: CronConfig) {
   }
 
   cron.schedule(cronExpression, performTask, { timezone });
-
-  return { performTask };
 }
