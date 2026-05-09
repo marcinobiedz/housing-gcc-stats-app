@@ -191,6 +191,6 @@ dist
 .svelte-kit
 
 # App data
-/data/
+data/
 
 # End of https://www.toptal.com/developers/gitignore/api/node
